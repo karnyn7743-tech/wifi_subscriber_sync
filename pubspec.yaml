@@ -1,1 +1,39 @@
+name: wifi_subscriber_sync
+description: "A local Wi-Fi subscription and device sync system with AES-GCM security and QR scanner."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_secure_storage: ^9.2.2
+  crypto: ^3.0.3
+  pointycastle: ^3.9.1
+  mobile_scanner: ^5.2.3
+  qr_flutter: ^4.1.0
+  local_auth: ^2.3.0
+  flutter_local_notifications: ^17.2.2
+  audioplayers: ^6.0.0
+  vibration: ^2.0.1
+  shared_preferences: ^2.3.2
+  csv: ^6.0.0
+  share_plus: ^10.0.2
+  path_provider: ^2.1.4
+  device_info_plus: ^10.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sounds/scanner_beep.mp3
+    - assets/sounds/security_alarm.mp3
 
