@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.example.wifi_subscriber_sync"
-    compileSdk = 34
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -32,7 +32,7 @@ android {
         applicationId = "com.example.wifi_subscriber_sync"
         // 23 كحد أدنى لدعم Keystore والمصادقة الحيوية Biometrics بشكل مستقر
         minSdk = 23
-        targetSdk = 34
+        targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
