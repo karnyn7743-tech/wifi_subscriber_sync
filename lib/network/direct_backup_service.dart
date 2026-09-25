@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import '../core/logging/sync_audit_logger.dart';
 import '../core/notifications/local_notification_service.dart';
 import '../core/notifications/security_alert_service.dart';
