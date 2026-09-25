@@ -1,0 +1,74 @@
+name: Build and Release Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # يتيح لك تشغيل البناء يدوياً بزر Run workflow من الجوال في أي وقت
+
+jobs:
+  build:
+    name: Build Signed Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. جلب الكود من المستودع
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. إعداد بيئة Java 17
+      - name: Set up Java Development Kit (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 3. إعداد بيئة Flutter
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      # 4. تثبيت المكتبات وحزم Dart
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # 5. توليد أيقونات التطبيق آلياً من assets/images/app_logo.png
+      - name: Generate App Icons
+        run: dart run flutter_launcher_icons
+        continue-on-error: true # لضمان عدم توقف البناء إذا وُجدت الأيقونات مسبقاً
+
+      # 6. استعادة ملف الـ Keystore المشفر من أسرار GitHub
+      - name: Decode Android Keystore
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+
+      # 7. كتابة ملف الخصائص key.properties
+      - name: Create key.properties
+        if: env.KEY_PROPERTIES != ''
+        env:
+          KEY_PROPERTIES: ${{ secrets.KEY_PROPERTIES }}
+        run: |
+          echo "$KEY_PROPERTIES" > android/key.properties
+
+      # 8. تشغيل الفحص والاختبارات الآلية
+      - name: Run Unit Tests
+        run: flutter test
+
+      # 9. تجميع حزم الـ APK بصيغة Release مقسمة حسب المعالج
+      - name: Build Release APK
+        run: flutter build apk --split-per-abi --release
+
+      # 10. رفع ملفات الـ APK الناتجة لتنزيلها على الهاتف فوراً
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wifi-subscriber-sync-apks
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
