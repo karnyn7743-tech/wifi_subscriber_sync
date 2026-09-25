@@ -151,7 +151,7 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
       if (mounted) _flashAnimController.reverse();
     });
 
-    await _controller.pause();
+    await _controller.stop();
 
     setState(() {
       _isProcessing = true;
@@ -295,10 +295,10 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
               children: [
                 Row(
                   children: [
-                    ValueListenableBuilder<TorchState>(
-                      valueListenable: _controller.torchState,
+                    ValueListenableBuilder<MobileScannerState>(
+                      valueListenable: _controller,
                       builder: (context, state, _) {
-                        final isTorchOn = state == TorchState.on;
+                        final isTorchOn = state.torchState == TorchState.on;
                         return _buildControlCircle(
                           icon: isTorchOn ? Icons.flash_on : Icons.flash_off,
                           isActive: isTorchOn,
@@ -307,16 +307,11 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
                         );
                       },
                     ),
-                    ValueListenableBuilder<CameraFacing>(
-                      valueListenable: _controller.cameraFacingState,
-                      builder: (context, state, _) {
-                        return _buildControlCircle(
-                          icon: Icons.flip_camera_ios,
-                          isActive: false,
-                          tooltip: 'تبديل الكاميرا',
-                          onTap: () => _controller.switchCamera(),
-                        );
-                      },
+                    _buildControlCircle(
+                      icon: Icons.flip_camera_ios,
+                      isActive: false,
+                      tooltip: 'تبديل الكاميرا',
+                      onTap: () => _controller.switchCamera(),
                     ),
                   ],
                 ),
@@ -491,4 +486,3 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
     );
   }
 }
-
