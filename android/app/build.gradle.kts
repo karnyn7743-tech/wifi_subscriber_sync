@@ -4,11 +4,9 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // البرنامج المساعد لـ Flutter
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// قراءة بيانات التوقيع من key.properties بأمان
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -17,9 +15,13 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.example.wifi_subscriber_sync"
-    compileSdk = 36
+    compileSdk = 34
+    // 1. تحديد إصدار NDK المتوافق لتفادي تحذيرات البناء
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
+        // 2. تفعيل Desugaring لحزمة flutter_local_notifications
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -30,9 +32,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.wifi_subscriber_sync"
-        // 23 كحد أدنى لدعم Keystore والمصادقة الحيوية Biometrics بشكل مستقر
         minSdk = 23
-        targetSdk = 36
+        targetSdk = 34
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
@@ -51,7 +52,6 @@ android {
 
     buildTypes {
         getByName("release") {
-            // تفعيل توقيع الإنتاج إذا وُجد المفتاح، وإلا استخدام Debug مؤقتاً
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
@@ -73,6 +73,7 @@ flutter {
 }
 
 dependencies {
-    // دعم MultiDex للأجهزة القديمة
     implementation("androidx.multidex:multidex:2.0.1")
+    // 3. إضافة مكتبة desugar_jdk_libs المطلوبة
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
