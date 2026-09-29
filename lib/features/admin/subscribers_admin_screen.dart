@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/logging/sync_audit_logger.dart';
 import '../../core/notifications/security_alert_service.dart';
 import '../../models/subscriber_model.dart';
+import '../../network/network_service.dart';
 import '../scanner/qr_scanner_screen.dart';
 import 'blocked_ips_dialog.dart';
 import 'widgets/secure_sync_dialog.dart';
@@ -20,10 +21,34 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
   List<Subscriber> _subscribers = [];
   bool _isLoading = true;
 
+  // سيرفر الوساطة والترحيل المركزي وقائمة الأجهزة المتصلة حياً
+  late final CentralRelayServer _relayServer;
+  List<ConnectedClientInfo> _liveConnectedDevices = [];
+
   @override
   void initState() {
     super.initState();
-    _loadSubscribers();
+    _initRelayServerAndData();
+  }
+
+  Future<void> _initRelayServerAndData() async {
+    _relayServer = CentralRelayServer(
+      onClientsChanged: (clients) {
+        if (mounted) {
+          setState(() => _liveConnectedDevices = clients);
+        }
+      },
+    );
+
+    await _loadSubscribers();
+    // تشغيل السيرفر المركزي وتزويده بقائمة المشتركين المسموح لهم فور الإقلاع
+    await _relayServer.startServer(_subscribers);
+  }
+
+  @override
+  void dispose() {
+    _relayServer.stopServer();
+    super.dispose();
   }
 
   Future<void> _loadSubscribers() async {
@@ -51,40 +76,51 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
       ];
       await _saveSubscribers(_subscribers);
     }
-    setState(() => _isLoading = false);
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 
   Future<void> _saveSubscribers(List<Subscriber> list) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = jsonEncode(list.map((s) => s.toMap()).toList());
     await prefs.setString(_storageKey, raw);
-    setState(() => _subscribers = list);
+    
+    if (mounted) {
+      setState(() => _subscribers = list);
+    }
+
+    // إشعار سيرفر الوساطة فوراً بالقائمة المحدثة لقطع اتصال أي جهاز تم حذفه أو تعطيله
+    _relayServer.updateAllowedSubscribers(list);
   }
 
-  // 1. حذف مشترك نهائياً
+  // 1. حذف المشترك نهائياً وفصل اتصاله الفوري إذا كان متصلاً
   Future<void> _deleteSubscriber(int index) async {
     final deletedItem = _subscribers[index];
     final updatedList = List<Subscriber>.from(_subscribers)..removeAt(index);
     await _saveSubscribers(updatedList);
 
+    // قطع اتصال المقبس للجهاز المحذوف لحظياً
+    _relayServer.disconnectClient(deletedItem.deviceId, reason: 'تم حذف حسابك من الشبكة');
+
     await SyncAuditLogger.log(
       eventType: 'SUBSCRIBER_DELETED',
       targetIp: 'LocalAdmin',
-      details: 'تم حذف المشترك: ${deletedItem.fullName} (${deletedItem.deviceId})',
+      details: 'تم حذف المشترك نهائياً: ${deletedItem.fullName} (${deletedItem.deviceId})',
       isSuccess: true,
     );
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('تم حذف "${deletedItem.fullName}" نهائياً من قاعدة البيانات'),
+          content: Text('تم حذف "${deletedItem.fullName}" وقطع اتصاله بالشبكة فوراً'),
           backgroundColor: Colors.red.shade700,
         ),
       );
     }
   }
 
-  // 2. تبديل حالة التفعيل / السداد مباشرة
+  // 2. تبديل حالة السداد والتفعيل
   Future<void> _togglePaidStatus(int index) async {
     final sub = _subscribers[index];
     final updatedSub = Subscriber(
@@ -136,9 +172,12 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
             child: const Text('إلغاء'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () {
-              if (nameController.text.isNotEmpty && idController.text.isNotEmpty) {
+              if (nameController.text.trim().isNotEmpty && idController.text.trim().isNotEmpty) {
                 final newSub = Subscriber(
                   deviceId: idController.text.trim(),
                   fullName: nameController.text.trim(),
@@ -152,6 +191,77 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
             child: const Text('إضافة وتفعيل'),
           ),
         ],
+      ),
+    );
+  }
+
+  // 4. نافذة استعراض الأجهزة المتصلة حياً بالسيرفر المركزي
+  void _showLiveConnectedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.sensors, color: Colors.teal),
+                const SizedBox(width: 8),
+                Text('المتصلون الآن (${_liveConnectedDevices.length})'),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: _liveConnectedDevices.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(20.0),
+                      child: Text(
+                        'لا توجد أجهزة متصلة بالسيرفر حالياً.\nتمر الاتصالات عبر المنفذ 8088 فور اتصال المشتركين.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    )
+                  : ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: _liveConnectedDevices.length,
+                      separatorBuilder: (_, __) => const Divider(),
+                      itemBuilder: (context, idx) {
+                        final client = _liveConnectedDevices[idx];
+                        final sub = _subscribers.firstWhere(
+                          (s) => s.deviceId == client.deviceId,
+                          orElse: () => Subscriber(deviceId: client.deviceId, fullName: 'جهاز غير معروف', isPaid: true, expiryDate: ''),
+                        );
+                        return ListTile(
+                          leading: const CircleAvatar(
+                            backgroundColor: Colors.green,
+                            radius: 16,
+                            child: Icon(Icons.phone_android, color: Colors.white, size: 18),
+                          ),
+                          title: Text(sub.fullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          subtitle: Text(
+                            'المعرف: ${client.deviceId}\nمتصل منذ: ${client.connectedAt.toString().split('.').first.split(' ').last}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          isThreeLine: true,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.link_off, color: Colors.red),
+                            tooltip: 'طرد وفصل الاتصال الآن',
+                            onPressed: () {
+                              _relayServer.disconnectClient(client.deviceId, reason: 'تم قطع اتصالك يدوياً من المشرف');
+                              setDialogState(() {});
+                            },
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('إغلاق'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -195,6 +305,16 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
         actions: [
+          // عداد حي بالأجهزة المتصلة بالسيرفر الوسيط
+          IconButton(
+            icon: Badge(
+              label: Text('${_liveConnectedDevices.length}'),
+              backgroundColor: _liveConnectedDevices.isNotEmpty ? Colors.greenAccent.shade700 : Colors.grey,
+              child: const Icon(Icons.sensors),
+            ),
+            tooltip: 'الأجهزة المتصلة حياً بالسيرفر',
+            onPressed: _showLiveConnectedDialog,
+          ),
           IconButton(
             icon: const Icon(Icons.security),
             tooltip: 'قائمة الأجهزة المحظورة',
@@ -270,6 +390,8 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                           separatorBuilder: (_, __) => const Divider(height: 1),
                           itemBuilder: (context, index) {
                             final sub = _subscribers[index];
+                            final isDeviceOnline = _liveConnectedDevices.any((d) => d.deviceId == sub.deviceId);
+
                             return Dismissible(
                               key: Key(sub.deviceId),
                               direction: DismissDirection.endToStart,
@@ -286,7 +408,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                                 ),
                               ),
                               confirmDismiss: (direction) async {
-                                return await showDialog(
+                                return await showDialog<bool>(
                                   context: context,
                                   builder: (ctx) => AlertDialog(
                                     title: const Text('تأكيد الحذف النهائي'),
@@ -304,18 +426,38 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                               },
                               onDismissed: (_) => _deleteSubscriber(index),
                               child: ListTile(
-                                leading: InkWell(
-                                  onTap: () => _togglePaidStatus(index),
-                                  child: CircleAvatar(
-                                    backgroundColor: sub.isPaid ? Colors.green.shade100 : Colors.red.shade100,
-                                    child: Icon(
-                                      sub.isPaid ? Icons.check : Icons.close,
-                                      color: sub.isPaid ? Colors.green : Colors.red,
+                                leading: Stack(
+                                  children: [
+                                    InkWell(
+                                      onTap: () => _togglePaidStatus(index),
+                                      child: CircleAvatar(
+                                        backgroundColor: sub.isPaid ? Colors.green.shade100 : Colors.red.shade100,
+                                        child: Icon(
+                                          sub.isPaid ? Icons.check : Icons.close,
+                                          color: sub.isPaid ? Colors.green : Colors.red,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                    if (isDeviceOnline)
+                                      Positioned(
+                                        right: 0,
+                                        bottom: 0,
+                                        child: Container(
+                                          width: 12,
+                                          height: 12,
+                                          decoration: BoxDecoration(
+                                            color: Colors.greenAccent.shade700,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(color: Colors.white, width: 2),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
                                 title: Text(sub.fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                subtitle: Text('معرف: ${sub.deviceId}\nالحالة: ${sub.isPaid ? 'مسموح بالاتصال' : 'معطل ومرفوض'}'),
+                                subtitle: Text(
+                                  'معرف: ${sub.deviceId}\nالحالة: ${sub.isPaid ? 'مسموح بالاتصال' : 'معطل ومرفوض'} ${isDeviceOnline ? '• متصل الآن 🟢' : ''}',
+                                ),
                                 isThreeLine: true,
                                 trailing: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -334,7 +476,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                                           context: context,
                                           builder: (ctx) => AlertDialog(
                                             title: const Text('حذف المشترك'),
-                                            content: Text('حذف "${sub.fullName}"؟'),
+                                            content: Text('حذف "${sub.fullName}" نهائياً؟'),
                                             actions: [
                                               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
                                               ElevatedButton(
