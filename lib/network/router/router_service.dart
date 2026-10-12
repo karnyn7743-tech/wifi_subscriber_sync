@@ -287,6 +287,9 @@ class UnifiedRouterManager {
 
   static RouterDriver? _currentDriver;
 
+  /// موصل عام للوصول إلى السائق النشط حالياً من شاشات الواجهة
+  static RouterDriver? get currentDriver => _currentDriver;
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     final isSyncEnabled = prefs.getBool(_prefRouterSyncEnabledKey) ?? false;
