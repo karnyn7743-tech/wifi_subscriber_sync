@@ -1,41 +1,55 @@
 import 'dart:convert';
+import 'subscriber_model.dart';
 
 class SyncQrPayload {
+  static const String prefix = 'DIRECT_SYNC_PAYLOAD';
+
   final String ip;
   final int port;
   final String pin;
-  final int validSeconds;
+  final String? deviceId;
+  final String? macAddress;
+  final String? fullName;
 
   SyncQrPayload({
     required this.ip,
     required this.port,
     required this.pin,
-    required this.validSeconds,
+    this.deviceId,
+    this.macAddress,
+    this.fullName,
   });
 
-  String toJsonString() {
-    return jsonEncode({
-      'type': 'DIRECT_SYNC_PAYLOAD',
+  Map<String, dynamic> toMap() {
+    return {
       'ip': ip,
       'port': port,
       'pin': pin,
-      'expires_in': validSeconds,
-    });
+      'deviceId': deviceId,
+      'macAddress': Subscriber.normalizeMac(macAddress),
+      'fullName': fullName,
+    };
+  }
+
+  String toJsonString() {
+    return '$prefix:${jsonEncode(toMap())}';
   }
 
   static SyncQrPayload? fromJsonString(String raw) {
+    if (!raw.startsWith(prefix)) return null;
     try {
-      final Map<String, dynamic> data = jsonDecode(raw) as Map<String, dynamic>;
-      if (data['type'] == 'DIRECT_SYNC_PAYLOAD') {
-        return SyncQrPayload(
-          ip: data['ip'] as String,
-          port: data['port'] as int? ?? 9090,
-          pin: data['pin'] as String,
-          validSeconds: data['expires_in'] as int? ?? 60,
-        );
-      }
-    } catch (_) {}
-    return null;
+      final jsonPart = raw.substring(prefix.length + 1);
+      final map = jsonDecode(jsonPart) as Map<String, dynamic>;
+      return SyncQrPayload(
+        ip: map['ip'] as String,
+        port: map['port'] as int,
+        pin: map['pin'] as String,
+        deviceId: map['deviceId'] as String?,
+        macAddress: Subscriber.normalizeMac(map['macAddress'] as String?),
+        fullName: map['fullName'] as String?,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
-
