@@ -7,6 +7,7 @@ class SyncQrPayload {
   final String ip;
   final int port;
   final String pin;
+  final int validSeconds; // المعامل المطلوب لإصلاح خطأ البناء
   final String? deviceId;
   final String? macAddress;
   final String? fullName;
@@ -15,6 +16,7 @@ class SyncQrPayload {
     required this.ip,
     required this.port,
     required this.pin,
+    this.validSeconds = 60,
     this.deviceId,
     this.macAddress,
     this.fullName,
@@ -25,6 +27,7 @@ class SyncQrPayload {
       'ip': ip,
       'port': port,
       'pin': pin,
+      'validSeconds': validSeconds,
       'deviceId': deviceId,
       'macAddress': Subscriber.normalizeMac(macAddress),
       'fullName': fullName,
@@ -44,6 +47,7 @@ class SyncQrPayload {
         ip: map['ip'] as String,
         port: map['port'] as int,
         pin: map['pin'] as String,
+        validSeconds: map['validSeconds'] as int? ?? 60,
         deviceId: map['deviceId'] as String?,
         macAddress: Subscriber.normalizeMac(map['macAddress'] as String?),
         fullName: map['fullName'] as String?,
