@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +7,7 @@ import '../../models/subscriber_model.dart';
 import '../../models/sync_diff_report.dart';
 import '../../models/sync_qr_payload.dart';
 import '../../network/direct_backup_service.dart';
+import '../../network/router/router_service.dart';
 import '../admin/widgets/sync_summary_bottom_sheet.dart';
 import 'scanner_feedback_service.dart';
 import 'widgets/qr_scanner_overlay.dart';
@@ -46,6 +48,8 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
   double _baseZoom = 0.0;
   bool _hasHitMaxZoom = false;
   bool _hasHitMinZoom = true;
+
+  static const String lanPhonePrefix = 'LANPHONE_CLIENT_ID:';
 
   @override
   void initState() {
@@ -132,8 +136,11 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
       return;
     }
 
+    // استخراج الرموز التي تخص إما مزامنة المشرفين أو رمز هوية تطبيق "لان فون"
     final validBarcodes = capture.barcodes.where((b) {
-      return b.rawValue != null && b.rawValue!.contains('DIRECT_SYNC_PAYLOAD');
+      final val = b.rawValue;
+      if (val == null) return false;
+      return val.contains('DIRECT_SYNC_PAYLOAD') || val.startsWith(lanPhonePrefix);
     }).toList();
 
     if (validBarcodes.isEmpty) return;
@@ -159,6 +166,13 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
       _lastScanTimestamp = now;
     });
 
+    // 1. معالجة رمز هوية المشترك القادم من تطبيق "لان فون"
+    if (rawPayload.startsWith(lanPhonePrefix)) {
+      await _handleLanPhoneSubscriber(rawPayload);
+      return;
+    }
+
+    // 2. معالجة رمز مزامنة قاعدة البيانات بين المشرفين
     final payload = SyncQrPayload.fromJsonString(rawPayload);
     if (payload == null) {
       _resetScannerState();
@@ -212,6 +226,131 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
     }
   }
 
+  /// معالجة وقراءة بيانات المشترك من رمز تطبيق "لان فون"
+  Future<void> _handleLanPhoneSubscriber(String raw) async {
+    try {
+      final jsonPart = raw.substring(lanPhonePrefix.length).trim();
+      final map = jsonDecode(jsonPart) as Map<String, dynamic>;
+
+      final name = map['name'] as String? ?? 'مشترك لان فون';
+      final devId = map['deviceId'] as String? ?? 'dev_${DateTime.now().millisecondsSinceEpoch}';
+      final mac = Subscriber.normalizeMac(map['macAddress'] as String?);
+      final phone = map['phone'] as String? ?? '';
+
+      if (!mounted) return;
+
+      final bool? confirm = await showModalBottomSheet<bool>(
+        context: context,
+        isDismissible: false,
+        enableDrag: false,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (ctx) => Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.verified_user, color: Colors.teal, size: 28),
+                  const SizedBox(width: 8),
+                  Text(
+                    'طلب تسجيل مشترك جديد (لان فون)',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+              Text('الاسم: $name', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              const SizedBox(height: 6),
+              Text('معرف الجهاز: $devId', style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+              const SizedBox(height: 6),
+              Text(
+                'عنوان الماك (MAC): ${mac ?? "غير متوفر في الرمز"}',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.teal),
+              ),
+              if (phone.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text('الهاتف: $phone', style: const TextStyle(fontSize: 13)),
+              ],
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('إلغاء'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.check_circle),
+                      label: const Text('اعتماد وتفعيل بالراوتر'),
+                      onPressed: () => Navigator.pop(ctx, true),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (confirm == true) {
+        final newSub = Subscriber(
+          deviceId: devId,
+          macAddress: mac,
+          fullName: name,
+          isPaid: true,
+          expiryDate: DateTime.now().add(const Duration(days: 30)).toIso8601String().split('T').first,
+          notes: phone.isNotEmpty ? 'هاتف: $phone' : null,
+        );
+
+        // فحص إذا كان موجوداً مسبقاً وتحديثه أو إضافته كجديد
+        final updatedList = List<Subscriber>.from(widget.currentList);
+        final existingIdx = updatedList.indexWhere((s) => s.deviceId == devId);
+        if (existingIdx != -1) {
+          updatedList[existingIdx] = newSub;
+        } else {
+          updatedList.add(newSub);
+        }
+
+        widget.onSyncComplete(updatedList);
+
+        // مزامنة الماك مع الراوتر مباشرة
+        if (mac != null) {
+          await UnifiedRouterManager.syncSubscriberStatus(newSub);
+        }
+
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('تم تفعيل المشترك "$name" في النظام والراوتر بنجاح!'),
+              backgroundColor: Colors.teal,
+            ),
+          );
+        }
+      } else {
+        _resetScannerState();
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('رمز لان فون غير صالح أو بصيغة غير متوافقة'), backgroundColor: Colors.red),
+        );
+        _resetScannerState();
+      }
+    }
+  }
+
   Barcode _findClosestToCenter(List<Barcode> barcodes, Size screenSize) {
     final screenCenter = Point(screenSize.width / 2, screenSize.height / 2);
     Barcode closest = barcodes.first;
@@ -251,7 +390,7 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('مسح رمز مزامنة المشتركين'),
+        title: const Text('مسح رمز المشترك / المزامنة'),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
       ),
@@ -354,7 +493,7 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
             left: 20,
             right: 20,
             child: Text(
-              'استخدم إصبعين للتكبير أو انقر مرتين للتقريب • وجّه العدسة نحو QR',
+              'وجّه العدسة نحو QR المشترك من تطبيق لان فون أو QR المزامنة',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white70,
@@ -385,7 +524,7 @@ class _SyncQrScannerScreenState extends State<SyncQrScannerScreen>
                       ),
                       SizedBox(height: 6),
                       Text(
-                        'جاري فك التشفير ومقارنة السجلات...',
+                        'جاري فك التشفير ومعالجة البيانات...',
                         style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                     ],
