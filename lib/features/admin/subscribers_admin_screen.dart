@@ -5,8 +5,10 @@ import '../../core/logging/sync_audit_logger.dart';
 import '../../core/notifications/security_alert_service.dart';
 import '../../models/subscriber_model.dart';
 import '../../network/network_service.dart';
+import '../../network/router/router_service.dart';
 import '../scanner/qr_scanner_screen.dart';
 import 'blocked_ips_dialog.dart';
+import 'widgets/router_settings_dialog.dart';
 import 'widgets/secure_sync_dialog.dart';
 
 class SubscribersAdminScreen extends StatefulWidget {
@@ -32,6 +34,10 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
   }
 
   Future<void> _initRelayServerAndData() async {
+    // 1. تهيئة محرك التحكم بالراوتر الخارجي من الإعدادات المحفوظة
+    await UnifiedRouterManager.init();
+
+    // 2. إعداد سيرفر الوساطة المركزي
     _relayServer = CentralRelayServer(
       onClientsChanged: (clients) {
         if (mounted) {
@@ -41,7 +47,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     );
 
     await _loadSubscribers();
-    // تشغيل السيرفر المركزي وتزويده بقائمة المشتركين المسموح لهم فور الإقلاع
+    // 3. تشغيل السيرفر وتزويده بقائمة المشتركين المسموح لهم
     await _relayServer.startServer(_subscribers);
   }
 
@@ -63,12 +69,14 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
       _subscribers = [
         Subscriber(
           deviceId: 'dev_84f932a10c7e',
+          macAddress: 'AA:BB:CC:DD:EE:01',
           fullName: 'محمد علي الحكيمي',
           isPaid: true,
           expiryDate: '2026-10-25',
         ),
         Subscriber(
           deviceId: 'dev_11a8b9423dff',
+          macAddress: 'AA:BB:CC:DD:EE:02',
           fullName: 'سعيد عبد الرحمن',
           isPaid: false,
           expiryDate: '2026-09-23',
@@ -85,27 +93,32 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     final prefs = await SharedPreferences.getInstance();
     final raw = jsonEncode(list.map((s) => s.toMap()).toList());
     await prefs.setString(_storageKey, raw);
-    
+
     if (mounted) {
       setState(() => _subscribers = list);
     }
 
-    // إشعار سيرفر الوساطة فوراً بالقائمة المحدثة لقطع اتصال أي جهاز تم حذفه أو تعطيله
+    // إشعار سيرفر الوساطة فوراً بالقائمة المحدثة
     _relayServer.updateAllowedSubscribers(list);
   }
 
-  // 1. حذف المشترك نهائياً وفصل اتصاله الفوري إذا كان متصلاً
+  // 1. حذف المشترك نهائياً وفصل اتصاله من السيرفر والراوتر
   Future<void> _deleteSubscriber(int index) async {
     final deletedItem = _subscribers[index];
     final updatedList = List<Subscriber>.from(_subscribers)..removeAt(index);
     await _saveSubscribers(updatedList);
 
-    // قطع اتصال المقبس للجهاز المحذوف لحظياً
+    // قطع اتصال المقبس للجهاز المحذوف في سيرفر الوساطة
     _relayServer.disconnectClient(deletedItem.deviceId, reason: 'تم حذف حسابك من الشبكة');
+
+    // حذف عنوان الماك من الراوتر الخارجي
+    if (deletedItem.macAddress != null) {
+      await UnifiedRouterManager.removeSubscriberMac(deletedItem.macAddress);
+    }
 
     await SyncAuditLogger.log(
       eventType: 'SUBSCRIBER_DELETED',
-      targetIp: 'LocalAdmin',
+      targetIp: deletedItem.macAddress ?? 'LocalAdmin',
       details: 'تم حذف المشترك نهائياً: ${deletedItem.fullName} (${deletedItem.deviceId})',
       isSuccess: true,
     );
@@ -113,18 +126,19 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('تم حذف "${deletedItem.fullName}" وقطع اتصاله بالشبكة فوراً'),
+          content: Text('تم حذف "${deletedItem.fullName}" ومزامنة الراوتر بنجاح'),
           backgroundColor: Colors.red.shade700,
         ),
       );
     }
   }
 
-  // 2. تبديل حالة السداد والتفعيل
+  // 2. تبديل حالة السداد والتفعيل ومزامنتها لحظياً مع الراوتر
   Future<void> _togglePaidStatus(int index) async {
     final sub = _subscribers[index];
     final updatedSub = Subscriber(
       deviceId: sub.deviceId,
+      macAddress: sub.macAddress,
       fullName: sub.fullName,
       isPaid: !sub.isPaid,
       expiryDate: sub.expiryDate,
@@ -134,37 +148,52 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     final updatedList = List<Subscriber>.from(_subscribers);
     updatedList[index] = updatedSub;
     await _saveSubscribers(updatedList);
+
+    // تطبيق حالة السماح أو الحظر في الراوتر الخارجي مباشرة
+    await UnifiedRouterManager.syncSubscriberStatus(updatedSub);
   }
 
-  // 3. نافذة إضافة مشترك جديد يدوياً
+  // 3. نافذة إضافة مشترك جديد يدوياً (مع دعم حقل الـ MAC)
   void _showAddSubscriberDialog() {
     final nameController = TextEditingController();
     final idController = TextEditingController();
+    final macController = TextEditingController();
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('إضافة جهاز مشترك جديد'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'اسم المشترك',
-                prefixIcon: Icon(Icons.person),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'اسم المشترك',
+                  prefixIcon: Icon(Icons.person),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: idController,
-              decoration: const InputDecoration(
-                labelText: 'معرف الجهاز (Device ID)',
-                prefixIcon: Icon(Icons.perm_identity),
-                hintText: 'dev_...',
+              const SizedBox(height: 12),
+              TextField(
+                controller: idController,
+                decoration: const InputDecoration(
+                  labelText: 'معرف الجهاز (Device ID)',
+                  prefixIcon: Icon(Icons.perm_identity),
+                  hintText: 'dev_...',
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: macController,
+                decoration: const InputDecoration(
+                  labelText: 'عنوان الماك (MAC Address)',
+                  prefixIcon: Icon(Icons.settings_ethernet),
+                  hintText: 'AA:BB:CC:DD:EE:FF (اختياري)',
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -176,16 +205,25 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
               backgroundColor: Colors.teal,
               foregroundColor: Colors.white,
             ),
-            onPressed: () {
+            onPressed: () async {
               if (nameController.text.trim().isNotEmpty && idController.text.trim().isNotEmpty) {
+                final normalizedMac = Subscriber.normalizeMac(macController.text.trim());
                 final newSub = Subscriber(
                   deviceId: idController.text.trim(),
+                  macAddress: normalizedMac,
                   fullName: nameController.text.trim(),
                   isPaid: true,
                   expiryDate: DateTime.now().add(const Duration(days: 30)).toIso8601String().split('T').first,
                 );
-                _saveSubscribers([..._subscribers, newSub]);
-                Navigator.pop(ctx);
+
+                await _saveSubscribers([..._subscribers, newSub]);
+
+                // مزامنة الماك مع الراوتر إذا تم إدخاله
+                if (normalizedMac != null) {
+                  await UnifiedRouterManager.syncSubscriberStatus(newSub);
+                }
+
+                if (mounted) Navigator.pop(ctx);
               }
             },
             child: const Text('إضافة وتفعيل'),
@@ -266,6 +304,13 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     );
   }
 
+  void _openRouterSettings() {
+    showDialog(
+      context: context,
+      builder: (ctx) => const RouterSettingsDialog(),
+    );
+  }
+
   void _openSecureSharing() {
     showDialog(
       context: context,
@@ -305,6 +350,12 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
         actions: [
+          // إعدادات الراوتر الخارجي
+          IconButton(
+            icon: const Icon(Icons.router),
+            tooltip: 'إعدادات الراوتر الخارجي',
+            onPressed: _openRouterSettings,
+          ),
           // عداد حي بالأجهزة المتصلة بالسيرفر الوسيط
           IconButton(
             icon: Badge(
@@ -412,7 +463,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                                   context: context,
                                   builder: (ctx) => AlertDialog(
                                     title: const Text('تأكيد الحذف النهائي'),
-                                    content: Text('هل تريد بالتأكيد إزالة المشترك "${sub.fullName}" نهائياً من الشبكة؟'),
+                                    content: Text('هل تريد بالتأكيد إزالة المشترك "${sub.fullName}" نهائياً من الشبكة والراوتر؟'),
                                     actions: [
                                       TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
                                       ElevatedButton(
@@ -456,7 +507,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                                 ),
                                 title: Text(sub.fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
                                 subtitle: Text(
-                                  'معرف: ${sub.deviceId}\nالحالة: ${sub.isPaid ? 'مسموح بالاتصال' : 'معطل ومرفوض'} ${isDeviceOnline ? '• متصل الآن 🟢' : ''}',
+                                  'المعرف: ${sub.deviceId}\nالماك: ${sub.macAddress ?? 'غير محدد'}\nالحالة: ${sub.isPaid ? 'مسموح بالاتصال' : 'معطل ومرفوض'} ${isDeviceOnline ? '• متصل الآن 🟢' : ''}',
                                 ),
                                 isThreeLine: true,
                                 trailing: Column(
@@ -476,7 +527,7 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
                                           context: context,
                                           builder: (ctx) => AlertDialog(
                                             title: const Text('حذف المشترك'),
-                                            content: Text('حذف "${sub.fullName}" نهائياً؟'),
+                                            content: Text('حذف "${sub.fullName}" نهائياً من الشبكة؟'),
                                             actions: [
                                               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
                                               ElevatedButton(
