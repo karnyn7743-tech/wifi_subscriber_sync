@@ -153,82 +153,176 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
     await UnifiedRouterManager.syncSubscriberStatus(updatedSub);
   }
 
-  // 3. نافذة إضافة مشترك جديد يدوياً (مع دعم حقل الـ MAC)
+  // 3. نافذة إضافة مشترك جديد يدوياً مع خيار جلب الماك من أجهزة الراوتر المتصلة
   void _showAddSubscriberDialog() {
     final nameController = TextEditingController();
     final idController = TextEditingController();
     final macController = TextEditingController();
+    bool isLoadingMacs = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('إضافة جهاز مشترك جديد'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'اسم المشترك',
-                  prefixIcon: Icon(Icons.person),
-                ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('إضافة جهاز مشترك جديد'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: 'اسم المشترك',
+                      prefixIcon: Icon(Icons.person),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: idController,
+                    decoration: const InputDecoration(
+                      labelText: 'معرف الجهاز (Device ID)',
+                      prefixIcon: Icon(Icons.perm_identity),
+                      hintText: 'dev_...',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: macController,
+                          decoration: const InputDecoration(
+                            labelText: 'عنوان الماك (MAC Address)',
+                            prefixIcon: Icon(Icons.settings_ethernet),
+                            hintText: 'AA:BB:CC:DD:EE:FF',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      IconButton(
+                        icon: isLoadingMacs
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.radar, color: Colors.teal),
+                        tooltip: 'جلب الأجهزة المتصلة بالراوتر الآن',
+                        onPressed: isLoadingMacs
+                            ? null
+                            : () async {
+                                setDialogState(() => isLoadingMacs = true);
+
+                                List<String> activeMacs = [];
+                                try {
+                                  // محاولة جلب المتصلين بالبوابة
+                                  final isConnected = await UnifiedRouterManager.testCurrentConnection();
+                                  if (isConnected) {
+                                    final currentDriver = UnifiedRouterManager.currentDriver;
+                                    if (currentDriver != null) {
+                                      activeMacs = await currentDriver.getConnectedMacAddresses();
+                                    }
+                                  }
+                                } catch (_) {}
+
+                                setDialogState(() => isLoadingMacs = false);
+
+                                if (!ctx.mounted) return;
+
+                                if (activeMacs.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('لم يتم العثور على أجهزة متصلة بالراوتر أو تعذر الاتصال به'),
+                                      backgroundColor: Colors.orange,
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                final selected = await showModalBottomSheet<String>(
+                                  context: context,
+                                  builder: (bCtx) => Container(
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Padding(
+                                          padding: EdgeInsets.all(8.0),
+                                          child: Text(
+                                            'اختر عنوان الماك من الأجهزة المتصلة:',
+                                            style: TextStyle(fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                        Expanded(
+                                          child: ListView.separated(
+                                            shrinkWrap: true,
+                                            itemCount: activeMacs.length,
+                                            separatorBuilder: (_, __) => const Divider(height: 1),
+                                            itemBuilder: (context, idx) {
+                                              final mac = activeMacs[idx];
+                                              return ListTile(
+                                                leading: const Icon(Icons.wifi, color: Colors.teal),
+                                                title: Text(
+                                                  mac,
+                                                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
+                                                ),
+                                                onTap: () => Navigator.pop(bCtx, mac),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+
+                                if (selected != null) {
+                                  macController.text = selected;
+                                }
+                              },
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: idController,
-                decoration: const InputDecoration(
-                  labelText: 'معرف الجهاز (Device ID)',
-                  prefixIcon: Icon(Icons.perm_identity),
-                  hintText: 'dev_...',
-                ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('إلغاء'),
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: macController,
-                decoration: const InputDecoration(
-                  labelText: 'عنوان الماك (MAC Address)',
-                  prefixIcon: Icon(Icons.settings_ethernet),
-                  hintText: 'AA:BB:CC:DD:EE:FF (اختياري)',
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.teal,
+                  foregroundColor: Colors.white,
                 ),
+                onPressed: () async {
+                  if (nameController.text.trim().isNotEmpty && idController.text.trim().isNotEmpty) {
+                    final normalizedMac = Subscriber.normalizeMac(macController.text.trim());
+                    final newSub = Subscriber(
+                      deviceId: idController.text.trim(),
+                      macAddress: normalizedMac,
+                      fullName: nameController.text.trim(),
+                      isPaid: true,
+                      expiryDate: DateTime.now().add(const Duration(days: 30)).toIso8601String().split('T').first,
+                    );
+
+                    await _saveSubscribers([..._subscribers, newSub]);
+
+                    // مزامنة الماك مع الراوتر إذا تم إدخاله
+                    if (normalizedMac != null) {
+                      await UnifiedRouterManager.syncSubscriberStatus(newSub);
+                    }
+
+                    if (mounted) Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('إضافة وتفعيل'),
               ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.teal,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () async {
-              if (nameController.text.trim().isNotEmpty && idController.text.trim().isNotEmpty) {
-                final normalizedMac = Subscriber.normalizeMac(macController.text.trim());
-                final newSub = Subscriber(
-                  deviceId: idController.text.trim(),
-                  macAddress: normalizedMac,
-                  fullName: nameController.text.trim(),
-                  isPaid: true,
-                  expiryDate: DateTime.now().add(const Duration(days: 30)).toIso8601String().split('T').first,
-                );
-
-                await _saveSubscribers([..._subscribers, newSub]);
-
-                // مزامنة الماك مع الراوتر إذا تم إدخاله
-                if (normalizedMac != null) {
-                  await UnifiedRouterManager.syncSubscriberStatus(newSub);
-                }
-
-                if (mounted) Navigator.pop(ctx);
-              }
-            },
-            child: const Text('إضافة وتفعيل'),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -328,7 +422,15 @@ class _SubscribersAdminScreenState extends State<SubscribersAdminScreen> {
       MaterialPageRoute(
         builder: (ctx) => SyncQrScannerScreen(
           currentList: _subscribers,
-          onSyncComplete: (updatedList) => _saveSubscribers(updatedList),
+          onSyncComplete: (updatedList) async {
+            await _saveSubscribers(updatedList);
+            // مزامنة حالة الأجهزة الجديدة المدمجة مع الراوتر
+            for (final sub in updatedList) {
+              if (sub.macAddress != null) {
+                await UnifiedRouterManager.syncSubscriberStatus(sub);
+              }
+            }
+          },
         ),
       ),
     );
